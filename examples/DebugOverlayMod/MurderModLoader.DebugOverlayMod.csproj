@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.4.*" />
+    <PackageReference Include="ImGui.NET" Version="1.91.*" />
+    <ProjectReference Include="..\..\src\MurderModLoader.API\MurderModLoader.API.csproj" />
+  </ItemGroup>
+
+  <!-- Reference game assemblies for type access.
+       Set GameAssemblyPath to the directory containing Murder.dll, Bang.dll, FNA.dll.
+       The build command sets this automatically from the game's .modded/ directory. -->
+  <PropertyGroup>
+    <GameAssemblyPath Condition="'$(GameAssemblyPath)' == ''">..\..\lib</GameAssemblyPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Murder">
+      <HintPath>$(GameAssemblyPath)\Murder.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Bang">
+      <HintPath>$(GameAssemblyPath)\Bang.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FNA">
+      <HintPath>$(GameAssemblyPath)\FNA.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

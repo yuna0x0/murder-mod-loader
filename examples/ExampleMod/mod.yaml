@@ -1,0 +1,7 @@
+Id: example-mod
+Name: Example Mod
+Version: 1.0.0
+Author: Your Name
+Description: A simple example mod for Murder Engine games.
+DLL: MurderModLoader.ExampleMod.dll
+Dependencies: []

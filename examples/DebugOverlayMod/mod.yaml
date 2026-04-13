@@ -1,0 +1,7 @@
+Id: debug-overlay
+Name: Debug Overlay
+Version: 1.0.0
+Author: yuna0x0
+Description: Logs game state (scene, entities, FPS) to the debug console. Toggle with F10.
+DLL: MurderModLoader.DebugOverlayMod.dll
+Dependencies: []

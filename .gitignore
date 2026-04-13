@@ -1,0 +1,17 @@
+# .NET build
+bin/
+obj/
+publish/
+
+# IDE
+.vs/
+.idea/
+.vscode/
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Game reference DLLs (extracted from game, not committed)
+lib/
