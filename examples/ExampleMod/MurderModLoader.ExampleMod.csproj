@@ -7,6 +7,6 @@
 
   <ItemGroup>
     <PackageReference Include="Lib.Harmony" Version="2.4.*" />
-    <ProjectReference Include="..\..\src\MurderModLoader.API\MurderModLoader.API.csproj" />
+    <PackageReference Include="MurderModLoader.API" Version="0.1.*" />
   </ItemGroup>
 </Project>

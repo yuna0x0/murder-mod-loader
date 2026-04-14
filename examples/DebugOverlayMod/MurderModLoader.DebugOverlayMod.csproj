@@ -9,7 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Lib.Harmony" Version="2.4.*" />
     <PackageReference Include="ImGui.NET" Version="1.91.*" />
-    <ProjectReference Include="..\..\src\MurderModLoader.API\MurderModLoader.API.csproj" />
+    <PackageReference Include="MurderModLoader.API" Version="0.1.*" />
   </ItemGroup>
 
   <!-- Reference game assemblies for type access.
