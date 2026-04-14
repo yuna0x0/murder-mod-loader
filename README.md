@@ -117,6 +117,11 @@ Mods can be distributed as:
 git clone https://github.com/yuna0x0/murder-mod-loader.git
 cd murder-mod-loader
 dotnet build
+
+# Run the installer directly from source
+dotnet run --project src/MurderModLoader.Installer -- <game-dir>
+dotnet run --project src/MurderModLoader.Installer -- build <mod-dir> <game-dir>
+dotnet run --project src/MurderModLoader.Installer -- add <source> <game-dir>
 ```
 
 ## Limitations
