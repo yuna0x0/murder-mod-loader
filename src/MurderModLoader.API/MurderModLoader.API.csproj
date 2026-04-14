@@ -11,5 +11,10 @@
     <License>MIT</License>
     <PackageProjectUrl>https://github.com/yuna0x0/murder-mod-loader</PackageProjectUrl>
     <RepositoryUrl>https://github.com/yuna0x0/murder-mod-loader</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
 </Project>
