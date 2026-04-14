@@ -1,0 +1,27 @@
+name: Publish to NuGet
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Pack
+        run: dotnet pack src/MurderModLoader.API -c Release -o artifacts/
+
+      - name: Publish
+        run: >
+          dotnet nuget push artifacts/*.nupkg
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate

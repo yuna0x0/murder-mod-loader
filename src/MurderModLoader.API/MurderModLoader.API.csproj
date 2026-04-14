@@ -3,5 +3,13 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- NuGet metadata -->
+    <PackageId>MurderModLoader.API</PackageId>
+    <Description>Mod API for Murder Engine games</Description>
+    <Authors>yuna0x0</Authors>
+    <License>MIT</License>
+    <PackageProjectUrl>https://github.com/yuna0x0/murder-mod-loader</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/yuna0x0/murder-mod-loader</RepositoryUrl>
   </PropertyGroup>
 </Project>

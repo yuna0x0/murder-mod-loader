@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish loader
+        run: dotnet publish src/MurderModLoader -c Release -o dist/loader/
+
+      - name: Publish installer
+        run: dotnet publish src/MurderModLoader.Installer -c Release -o dist/installer/
+
+      - name: Copy docs
+        run: |
+          cp README.md dist/
+          cp LICENSE dist/
+
+      - name: Package
+        run: cd dist && zip -r ../murder-mod-loader-${{ github.event.release.tag_name }}.zip .
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: murder-mod-loader-${{ github.event.release.tag_name }}.zip

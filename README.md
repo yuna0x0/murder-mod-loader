@@ -19,6 +19,9 @@ dotnet publish src/MurderModLoader.Installer -c Release -o publish/installer/
 # Install into a game (auto-detects SDK)
 dotnet run --project src/MurderModLoader.Installer -- "/path/to/game"
 
+# Or specify the .NET SDK path manually
+dotnet run --project src/MurderModLoader.Installer -- "/path/to/game" "/path/to/dotnet-sdk-8.0"
+
 # Launch
 /path/to/game/launch-modded.sh    # Linux / macOS
 /path/to/game/launch-modded.bat   # Windows
