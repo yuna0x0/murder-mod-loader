@@ -8,7 +8,32 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  loader:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish loader
+        run: dotnet publish src/MurderModLoader -c Release -o dist/
+
+      - name: Copy docs
+        run: |
+          cp README.md dist/
+          cp LICENSE dist/
+
+      - name: Package
+        run: cd dist && zip -r ../murder-mod-loader-${{ github.event.release.tag_name }}.zip .
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.event.release.tag_name }} murder-mod-loader-${{ github.event.release.tag_name }}.zip --clobber
+
+  installer:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -32,21 +57,13 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Publish loader
-        run: dotnet publish src/MurderModLoader -c Release -o dist/loader/
-
       - name: Publish installer
-        run: dotnet publish src/MurderModLoader.Installer -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -o dist/installer/
-
-      - name: Copy docs
-        run: |
-          cp README.md dist/
-          cp LICENSE dist/
+        run: dotnet publish src/MurderModLoader.Installer -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -o dist/
 
       - name: Package
-        run: cd dist && zip -r ../murder-mod-loader-${{ github.event.release.tag_name }}-${{ matrix.name }}.zip .
+        run: cd dist && zip -r ../murder-mod-install-${{ github.event.release.tag_name }}-${{ matrix.name }}.zip .
 
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.event.release.tag_name }} murder-mod-loader-${{ github.event.release.tag_name }}-${{ matrix.name }}.zip --clobber
+        run: gh release upload ${{ github.event.release.tag_name }} murder-mod-install-${{ github.event.release.tag_name }}-${{ matrix.name }}.zip --clobber
