@@ -777,6 +777,7 @@ class Program
 
     static string? FindLoaderPublish(string? dotnetDir)
     {
+        // Check local paths first (running from repo or alongside loader)
         var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? ".";
         var candidates = new List<string>
         {
@@ -784,15 +785,74 @@ class Program
             Path.Combine(exeDir, "loader"),
             "publish/loader",
             "loader",
+            exeDir,
         };
-        candidates.Add(exeDir);
 
         foreach (var dir in candidates)
         {
             if (File.Exists(Path.Combine(dir, "MurderModLoader.dll")))
                 return Path.GetFullPath(dir);
         }
-        return null;
+
+        // Check user-level cache (from previous download)
+        var cacheDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "murder-mod-loader", "loader");
+        if (File.Exists(Path.Combine(cacheDir, "MurderModLoader.dll")))
+            return cacheDir;
+
+        // Download from GitHub releases
+        Info("Downloading mod loader from GitHub...");
+        try
+        {
+            return DownloadLoader(cacheDir);
+        }
+        catch (Exception ex)
+        {
+            Error($"Failed to download loader: {ex.Message}");
+            return null;
+        }
+    }
+
+    static string DownloadLoader(string cacheDir)
+    {
+        // Resolve latest release tag via GitHub API
+        var releaseUrl = "https://api.github.com/repos/yuna0x0/murder-mod-loader/releases/latest";
+        Http.DefaultRequestHeaders.UserAgent.TryParseAdd("murder-mod-install");
+        var json = Http.GetStringAsync(releaseUrl).GetAwaiter().GetResult();
+        using var doc = JsonDocument.Parse(json);
+        var assets = doc.RootElement.GetProperty("assets");
+        var tag = doc.RootElement.GetProperty("tag_name").GetString() ?? "unknown";
+
+        // Find the loader zip (murder-mod-loader-vX.Y.Z.zip)
+        string? loaderUrl = null;
+        foreach (var asset in assets.EnumerateArray())
+        {
+            var name = asset.GetProperty("name").GetString() ?? "";
+            if (name.StartsWith("murder-mod-loader-") && name.EndsWith(".zip") &&
+                !name.Contains("install"))
+            {
+                loaderUrl = asset.GetProperty("browser_download_url").GetString();
+                break;
+            }
+        }
+
+        if (loaderUrl == null)
+            throw new InvalidOperationException("Loader zip not found in latest release");
+
+        Info($"  Version: {tag}");
+        var tempZip = Path.Combine(Path.GetTempPath(), $"murder-mod-loader-{tag}.zip");
+        DownloadFile(loaderUrl, tempZip);
+
+        // Extract to cache
+        if (Directory.Exists(cacheDir))
+            Directory.Delete(cacheDir, true);
+        Directory.CreateDirectory(cacheDir);
+        ZipFile.ExtractToDirectory(tempZip, cacheDir);
+        File.Delete(tempZip);
+
+        Info($"  Cached to {cacheDir}");
+        return cacheDir;
     }
 
     static bool ExtractBundle(string gameExe, string outputDir)
