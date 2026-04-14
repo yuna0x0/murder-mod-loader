@@ -1,14 +1,30 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Get tag name
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${{ steps.tag.outputs.tag }}" --repo "${{ github.repository }}" --draft --generate-notes --title "murder-mod-loader ${{ steps.tag.outputs.tag }}"
+
   loader:
+    needs: create-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,14 +42,15 @@ jobs:
           cp LICENSE dist/
 
       - name: Package
-        run: cd dist && zip -r ../murder-mod-loader-${{ github.event.release.tag_name }}.zip .
+        run: cd dist && zip -r ../murder-mod-loader-${{ needs.create-release.outputs.tag }}.zip .
 
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.event.release.tag_name }} murder-mod-loader-${{ github.event.release.tag_name }}.zip --clobber
+        run: gh release upload "${{ needs.create-release.outputs.tag }}" murder-mod-loader-${{ needs.create-release.outputs.tag }}.zip --clobber --repo "${{ github.repository }}"
 
   installer:
+    needs: create-release
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -61,9 +78,18 @@ jobs:
         run: dotnet publish src/MurderModLoader.Installer -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -o dist/
 
       - name: Package
-        run: cd dist && zip -r ../murder-mod-install-${{ github.event.release.tag_name }}-${{ matrix.name }}.zip .
+        run: cd dist && zip -r ../murder-mod-install-${{ needs.create-release.outputs.tag }}-${{ matrix.name }}.zip .
 
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.event.release.tag_name }} murder-mod-install-${{ github.event.release.tag_name }}-${{ matrix.name }}.zip --clobber
+        run: gh release upload "${{ needs.create-release.outputs.tag }}" murder-mod-install-${{ needs.create-release.outputs.tag }}-${{ matrix.name }}.zip --clobber --repo "${{ github.repository }}"
+
+  publish:
+    needs: [create-release, loader, installer]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ needs.create-release.outputs.tag }}" --draft=false --repo "${{ github.repository }}"
