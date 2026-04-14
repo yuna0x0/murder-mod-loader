@@ -5,12 +5,13 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -26,6 +27,8 @@ jobs:
   loader:
     needs: create-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +55,8 @@ jobs:
   installer:
     needs: create-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
@@ -88,6 +93,8 @@ jobs:
   publish:
     needs: [create-release, loader, installer]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Publish release
         env:
