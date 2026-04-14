@@ -11,6 +11,7 @@ public sealed class ModMetadata
     public string Author { get; set; } = "";
     public string Description { get; set; } = "";
     public string DLL { get; set; } = "";
+    public bool Enabled { get; set; } = true;
     public List<ModDependency> Dependencies { get; init; } = [];
 }
 

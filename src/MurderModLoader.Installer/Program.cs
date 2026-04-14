@@ -20,14 +20,26 @@ class Program
         if (args[0] == "build")
             return BuildMod(args.Skip(1).ToArray());
 
-        var gameDir = Path.GetFullPath(args[0]);
+        var inputDir = Path.GetFullPath(args[0]);
         string? dotnetDir = args.Length > 1 ? Path.GetFullPath(args[1]) : null;
 
-        if (!Directory.Exists(gameDir))
+        if (!Directory.Exists(inputDir))
         {
-            Error($"Game directory not found: {gameDir}");
+            Error($"Directory not found: {inputDir}");
             return 1;
         }
+
+        // Resolve the effective game directory.
+        // For macOS .app bundles, the game root is Contents/MacOS/.
+        // For flat directories, it's the directory itself.
+        var gameDir = ResolveGameDir(inputDir);
+        if (gameDir == null)
+        {
+            Error($"Could not determine game directory layout for: {inputDir}");
+            return 1;
+        }
+        if (gameDir != inputDir)
+            Info($"Detected macOS .app bundle, game root: {gameDir}");
 
         // Find game executable
         var gameExe = FindGameExecutable(gameDir);
@@ -40,7 +52,7 @@ class Program
         Info($"Game: {gameName}");
 
         // Find or auto-detect dotnet runtime
-        dotnetDir ??= DetectDotnetSdk(gameExe);
+        dotnetDir ??= DetectDotnetSdk(gameExe, inputDir);
         if (dotnetDir == null)
         {
             Error("Could not find a compatible .NET 8 SDK.");
@@ -87,7 +99,7 @@ class Program
 
         // Step 5: Create launch scripts
         Info("Creating launch scripts...");
-        CreateLaunchScript(gameDir, gameName, dotnetDir);
+        CreateLaunchScript(gameDir, gameName, dotnetDir, inputDir);
 
         Info("\nInstallation complete!");
         Info($"  Mods directory: {Path.Combine(gameDir, "mods")}");
@@ -101,16 +113,51 @@ class Program
 
     static void PrintUsage()
     {
-        Console.WriteLine("murder-mod-install — Murder Engine mod loader installer");
+        Console.WriteLine("murder-mod-install -- Murder Engine mod loader installer");
         Console.WriteLine();
         Console.WriteLine("Commands:");
         Console.WriteLine("  murder-mod-install <game-dir> [sdk-dir]    Install mod loader into a game");
         Console.WriteLine("  murder-mod-install build <mod-dir> <game-dir>   Build a mod and install it");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  game-dir    Path to the game directory");
+        Console.WriteLine("  game-dir    Path to the game directory (or macOS .app bundle)");
         Console.WriteLine("  sdk-dir     Path to .NET 8 SDK (auto-detected if omitted)");
         Console.WriteLine("  mod-dir     Path to the mod project (containing .csproj and mod.yaml)");
+        Console.WriteLine();
+        Console.WriteLine("Supports both flat game directories and macOS .app bundles.");
+    }
+
+    /// <summary>
+    /// Resolves the effective game root directory.
+    /// For macOS .app bundles (XXX.app/Contents/MacOS/), returns the MacOS dir.
+    /// For flat directories, returns the input directory.
+    /// </summary>
+    static string? ResolveGameDir(string inputDir)
+    {
+        // Check if this is a .app bundle
+        if (inputDir.EndsWith(".app", StringComparison.OrdinalIgnoreCase) ||
+            inputDir.EndsWith(".app/", StringComparison.OrdinalIgnoreCase) ||
+            inputDir.EndsWith(".app" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            var macosDir = Path.Combine(inputDir, "Contents", "MacOS");
+            if (Directory.Exists(macosDir))
+                return macosDir;
+
+            Error($"  .app bundle missing Contents/MacOS/: {inputDir}");
+            return null;
+        }
+
+        // Check if the user passed a directory that contains a .app-style layout
+        // (e.g., they passed the Contents/ or Contents/MacOS/ directly)
+        if (Path.GetFileName(inputDir) == "MacOS" &&
+            Path.GetFileName(Path.GetDirectoryName(inputDir) ?? "") == "Contents")
+        {
+            // Already pointing at the MacOS dir
+            return inputDir;
+        }
+
+        // Flat directory - check it has either the executable or resources/
+        return inputDir;
     }
 
     static int BuildMod(string[] args)
@@ -122,18 +169,21 @@ class Program
         }
 
         var modDir = Path.GetFullPath(args[0]);
-        var gameDir = Path.GetFullPath(args[1]);
+        var inputDir = Path.GetFullPath(args[1]);
 
         if (!Directory.Exists(modDir))
         {
             Error($"Mod directory not found: {modDir}");
             return 1;
         }
-        if (!Directory.Exists(gameDir))
+        if (!Directory.Exists(inputDir))
         {
-            Error($"Game directory not found: {gameDir}");
+            Error($"Game directory not found: {inputDir}");
             return 1;
         }
+
+        // Resolve .app bundle if needed
+        var gameDir = ResolveGameDir(inputDir) ?? inputDir;
 
         // Find mod.yaml
         var yamlPath = Path.Combine(modDir, "mod.yaml");
@@ -165,7 +215,7 @@ class Program
             return 1;
         }
 
-        // Build — point GameAssemblyPath to the game's extracted assemblies
+        // Build -- point GameAssemblyPath to the game's extracted assemblies
         Info($"Building mod '{modId}'...");
         var buildOutput = Path.Combine(modDir, "bin", "Release", "net8.0", "publish");
         var moddedDir = Path.Combine(gameDir, ".modded");
@@ -181,7 +231,7 @@ class Program
         var installDir = Path.Combine(gameDir, "mods", modId);
         Directory.CreateDirectory(installDir);
 
-        // DLLs already provided by the loader or game — don't duplicate
+        // DLLs already provided by the loader or game -- don't duplicate
         var skipFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "MurderModLoader.API.dll", "0Harmony.dll", "Murder.dll",
@@ -265,7 +315,7 @@ class Program
         return null;
     }
 
-    static string? DetectDotnetSdk(string gameExe)
+    static string? DetectDotnetSdk(string gameExe, string inputDir)
     {
         // Determine game architecture
         var gameArch = DetectArchitecture(gameExe);
@@ -297,8 +347,9 @@ class Program
         if (pathDotnet != null)
             candidates.Insert(0, Path.GetDirectoryName(pathDotnet)!);
 
-        // Check game's parent directories for a local SDK
-        var parentDir = Path.GetDirectoryName(Path.GetDirectoryName(gameExe));
+        // Check the original input directory's parent for a local SDK
+        // (works for both flat dirs and .app bundles)
+        var parentDir = Path.GetDirectoryName(inputDir);
         if (parentDir != null)
         {
             foreach (var dir in Directory.GetDirectories(parentDir, "dotnet-sdk-8*"))
@@ -439,6 +490,12 @@ class Program
 
             if (opts.TryGetProperty("includedFrameworks", out var frameworks))
             {
+                if (frameworks.GetArrayLength() == 0)
+                {
+                    Warning("  Runtime config has empty includedFrameworks array");
+                    return;
+                }
+
                 var fw = frameworks[0];
                 var name = fw.GetProperty("name").GetString() ?? "Microsoft.NETCore.App";
 
@@ -495,7 +552,7 @@ class Program
             }
         }
 
-        // Copy FMOD native libs
+        // Copy FMOD native libs from resources/fmod/pc/
         var fmodDir = Path.Combine(gameDir, "resources", "fmod", "pc");
         if (Directory.Exists(fmodDir))
         {
@@ -511,9 +568,9 @@ class Program
         }
     }
 
-    static void CreateLaunchScript(string gameDir, string gameName, string dotnetDir)
+    static void CreateLaunchScript(string gameDir, string gameName, string dotnetDir, string inputDir)
     {
-        // Store SDK path relative to game dir if possible, otherwise absolute
+        // Store SDK path relative to the directory containing the launch script
         var relativeSdk = Path.GetRelativePath(gameDir, dotnetDir);
         var useRelative = !relativeSdk.StartsWith("..");
 
@@ -578,7 +635,9 @@ class Program
                     ".modded/{gameName}.dll" "$@"
                 """);
 
-            Run("chmod", $"+x \"{sh}\"");
+            var chmodResult = Run("chmod", $"+x \"{sh}\"");
+            if (chmodResult != 0)
+                Warning("Could not set launch script as executable. Run: chmod +x " + sh);
         }
     }
 

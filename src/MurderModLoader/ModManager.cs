@@ -34,6 +34,9 @@ public sealed class ModManager
         if (_initialized) return;
         _initialized = true;
 
+        // Register shutdown hook so OnUnload() is called on exit
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown();
+
         Log.Info("Murder Mod Loader initializing...");
 
         if (!Directory.Exists(_modsDir))
@@ -65,11 +68,12 @@ public sealed class ModManager
             }
             catch (Exception ex)
             {
-                Log.Error($"  Failed to load {meta.Name}: {ex.Message}");
+                Log.Error($"  Failed to load {meta.Name}: {ex}");
             }
         }
 
         // Phase 4: Call OnLoad on all mods
+        var failedMods = new List<LoadedMod>();
         foreach (var mod in _mods)
         {
             try
@@ -78,9 +82,14 @@ public sealed class ModManager
             }
             catch (Exception ex)
             {
-                Log.Error($"  {mod.Metadata.Name}.OnLoad failed: {ex.Message}");
+                Log.Error($"  {mod.Metadata.Name}.OnLoad failed: {ex}");
+                failedMods.Add(mod);
             }
         }
+
+        // Remove mods that failed OnLoad so they don't get OnAllModsLoaded
+        foreach (var failed in failedMods)
+            _mods.Remove(failed);
 
         // Phase 5: Call OnAllModsLoaded
         foreach (var mod in _mods)
@@ -91,7 +100,7 @@ public sealed class ModManager
             }
             catch (Exception ex)
             {
-                Log.Error($"  {mod.Metadata.Name}.OnAllModsLoaded failed: {ex.Message}");
+                Log.Error($"  {mod.Metadata.Name}.OnAllModsLoaded failed: {ex}");
             }
         }
 
@@ -115,6 +124,10 @@ public sealed class ModManager
             ?? throw new InvalidOperationException(
                 $"No IMurderMod implementation found in {meta.DLL}");
 
+        if (modType.GetConstructor(Type.EmptyTypes) == null)
+            throw new InvalidOperationException(
+                $"IMurderMod implementation '{modType.FullName}' in {meta.DLL} must have a parameterless constructor");
+
         var instance = (IMurderMod)Activator.CreateInstance(modType)!;
 
         var context = new ModContext
@@ -129,14 +142,17 @@ public sealed class ModManager
     }
 
     /// <summary>
-    /// Called during game shutdown.
+    /// Called during game shutdown via ProcessExit hook.
     /// </summary>
     public void Shutdown()
     {
         foreach (var mod in _mods)
         {
             try { mod.Instance.OnUnload(); }
-            catch { /* best effort */ }
+            catch (Exception ex)
+            {
+                Log.Error($"  {mod.Metadata.Name}.OnUnload failed: {ex.Message}");
+            }
         }
     }
 }

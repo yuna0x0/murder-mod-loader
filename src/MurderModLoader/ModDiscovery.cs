@@ -26,12 +26,27 @@ internal static class ModDiscovery
             var yamlPath = Path.Combine(dir, "mod.yaml");
             if (!File.Exists(yamlPath)) continue;
 
+            // Skip mods with a .disabled marker file
+            if (File.Exists(Path.Combine(dir, ".disabled")))
+            {
+                Log.Info($"  Skipping disabled mod: {Path.GetFileName(dir)} (.disabled file)");
+                continue;
+            }
+
             try
             {
                 var yaml = File.ReadAllText(yamlPath);
                 var meta = YamlDeserializer.Deserialize<ModMetadata>(yaml);
                 if (string.IsNullOrEmpty(meta.Id))
                     meta.Id = Path.GetFileName(dir);
+
+                // Skip mods with Enabled: false in mod.yaml
+                if (!meta.Enabled)
+                {
+                    Log.Info($"  Skipping disabled mod: {meta.Name ?? meta.Id} (Enabled: false)");
+                    continue;
+                }
+
                 mods.Add(meta);
             }
             catch (Exception ex)
