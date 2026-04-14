@@ -31,8 +31,7 @@ jobs:
       - name: Package
         run: cd dist && zip -r ../murder-mod-loader-${{ github.event.release.tag_name }}.zip .
 
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.release.tag_name }}
-          files: murder-mod-loader-${{ github.event.release.tag_name }}.zip
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.event.release.tag_name }} murder-mod-loader-${{ github.event.release.tag_name }}.zip --clobber
