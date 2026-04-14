@@ -10,6 +10,21 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - rid: win-x64
+            name: windows-x64
+          - rid: win-arm64
+            name: windows-arm64
+          - rid: linux-x64
+            name: linux-x64
+          - rid: linux-arm64
+            name: linux-arm64
+          - rid: osx-x64
+            name: macos-x64
+          - rid: osx-arm64
+            name: macos-arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +36,7 @@ jobs:
         run: dotnet publish src/MurderModLoader -c Release -o dist/loader/
 
       - name: Publish installer
-        run: dotnet publish src/MurderModLoader.Installer -c Release -o dist/installer/
+        run: dotnet publish src/MurderModLoader.Installer -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -o dist/installer/
 
       - name: Copy docs
         run: |
@@ -29,9 +44,9 @@ jobs:
           cp LICENSE dist/
 
       - name: Package
-        run: cd dist && zip -r ../murder-mod-loader-${{ github.event.release.tag_name }}.zip .
+        run: cd dist && zip -r ../murder-mod-loader-${{ github.event.release.tag_name }}-${{ matrix.name }}.zip .
 
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.event.release.tag_name }} murder-mod-loader-${{ github.event.release.tag_name }}.zip --clobber
+        run: gh release upload ${{ github.event.release.tag_name }} murder-mod-loader-${{ github.event.release.tag_name }}-${{ matrix.name }}.zip --clobber
