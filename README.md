@@ -39,6 +39,29 @@ murder-mod-install "/path/to/game" "/path/to/dotnet-sdk-8.0"
 /path/to/game/launch-modded.bat   # Windows
 ```
 
+## Installing Mods
+
+```bash
+# From NuGet
+murder-mod-install add nuget:MyMod "/path/to/game"
+murder-mod-install add nuget:MyMod@1.0.0 "/path/to/game"
+
+# From a git repository
+murder-mod-install add git:https://github.com/user/my-mod "/path/to/game"
+
+# From a zip URL (e.g., GitHub release)
+murder-mod-install add https://github.com/user/my-mod/releases/download/v1.0/my-mod-windows.zip "/path/to/game"
+
+# From a local zip file
+murder-mod-install add ./my-mod.zip "/path/to/game"
+```
+
+Git sources are built automatically if the repository contains a `.csproj`.
+
+### Disabling a mod
+
+Place a `.disabled` file in the mod's directory, or set `Enabled: false` in `mod.yaml`.
+
 ## Creating a Mod
 
 Create a directory with `mod.yaml` and a C# project:
@@ -75,15 +98,18 @@ Reference the mod API in your `.csproj`:
 
 For game type references (Murder, Bang, FNA), set `GameAssemblyPath` in your `.csproj` to the game's `.modded/` directory, or let the build command handle it.
 
-### Build and install a mod
+### Build and install from source
 
 ```bash
 murder-mod-install build <mod-dir> <game-dir>
 ```
 
-### Disabling a mod
+### Publishing a mod
 
-Place a `.disabled` file in the mod's directory, or set `Enabled: false` in `mod.yaml`.
+Mods can be distributed as:
+- **NuGet package** -- include `mod.yaml` and DLLs in a NuGet package
+- **Git repository** -- include `mod.yaml` and either source (`.csproj`) or pre-built DLLs
+- **Zip file** -- zip the mod folder containing `mod.yaml` and DLLs
 
 ## Building from Source
 

@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.IO.Compression;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
@@ -8,6 +10,8 @@ using System.Text.Json;
 /// </summary>
 class Program
 {
+    static readonly HttpClient Http = new();
+
     static int Main(string[] args)
     {
         if (args.Length < 1 || args[0] is "-h" or "--help")
@@ -19,6 +23,8 @@ class Program
         // Subcommand dispatch
         if (args[0] == "build")
             return BuildMod(args.Skip(1).ToArray());
+        if (args[0] == "add")
+            return AddMod(args.Skip(1).ToArray());
 
         var inputDir = Path.GetFullPath(args[0]);
         string? dotnetDir = args.Length > 1 ? Path.GetFullPath(args[1]) : null;
@@ -83,8 +89,6 @@ class Program
             return 1;
 
         // Detect the real entry-point DLL name from extracted bundle.
-        // The executable filename (e.g. "NeoCityExpress") may differ from the
-        // actual assembly name inside the bundle (e.g. "LDGame").
         var entryName = DetectEntryPointName(moddedDir) ?? gameName;
         if (entryName != gameName)
             Info($"  Bundle entry point: {entryName} (differs from executable: {gameName})");
@@ -123,49 +127,397 @@ class Program
         Console.WriteLine("murder-mod-install -- Murder Engine mod loader installer");
         Console.WriteLine();
         Console.WriteLine("Commands:");
-        Console.WriteLine("  murder-mod-install <game-dir> [sdk-dir]    Install mod loader into a game");
-        Console.WriteLine("  murder-mod-install build <mod-dir> <game-dir>   Build a mod and install it");
+        Console.WriteLine("  murder-mod-install <game-dir> [sdk-dir]         Install mod loader into a game");
+        Console.WriteLine("  murder-mod-install build <mod-dir> <game-dir>   Build and install a mod from source");
+        Console.WriteLine("  murder-mod-install add <source> <game-dir>      Install a mod from NuGet, git, or zip");
         Console.WriteLine();
-        Console.WriteLine("Options:");
-        Console.WriteLine("  game-dir    Path to the game directory (or macOS .app bundle)");
-        Console.WriteLine("  sdk-dir     Path to .NET 8 SDK (auto-detected if omitted)");
-        Console.WriteLine("  mod-dir     Path to the mod project (containing .csproj and mod.yaml)");
+        Console.WriteLine("Sources for 'add':");
+        Console.WriteLine("  nuget:<package-id>          NuGet package (latest version)");
+        Console.WriteLine("  nuget:<package-id>@<ver>    NuGet package (specific version)");
+        Console.WriteLine("  git:<url>                   Git repository");
+        Console.WriteLine("  https://.../*.zip           Zip file URL (direct download)");
+        Console.WriteLine("  /path/to/mod.zip            Local zip file");
         Console.WriteLine();
         Console.WriteLine("Supports both flat game directories and macOS .app bundles.");
     }
 
-    /// <summary>
-    /// Resolves the effective game root directory.
-    /// For macOS .app bundles (XXX.app/Contents/MacOS/), returns the MacOS dir.
-    /// For flat directories, returns the input directory.
-    /// </summary>
-    static string? ResolveGameDir(string inputDir)
-    {
-        // Check if this is a .app bundle
-        if (inputDir.EndsWith(".app", StringComparison.OrdinalIgnoreCase) ||
-            inputDir.EndsWith(".app/", StringComparison.OrdinalIgnoreCase) ||
-            inputDir.EndsWith(".app" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-        {
-            var macosDir = Path.Combine(inputDir, "Contents", "MacOS");
-            if (Directory.Exists(macosDir))
-                return macosDir;
+    // ─── add command ────────────────────────────────────────────────────────────
 
-            Error($"  .app bundle missing Contents/MacOS/: {inputDir}");
+    static int AddMod(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.WriteLine("Usage: murder-mod-install add <source> <game-dir>");
+            Console.WriteLine();
+            Console.WriteLine("Sources:");
+            Console.WriteLine("  nuget:<package-id>          NuGet package (latest version)");
+            Console.WriteLine("  nuget:<package-id>@<ver>    NuGet package (specific version)");
+            Console.WriteLine("  git:<url>                   Git repository");
+            Console.WriteLine("  https://.../*.zip           Zip file URL");
+            Console.WriteLine("  /path/to/mod.zip            Local zip file");
+            return 1;
+        }
+
+        var source = args[0];
+        var inputDir = Path.GetFullPath(args[1]);
+        var gameDir = ResolveGameDir(inputDir) ?? inputDir;
+
+        if (!Directory.Exists(gameDir))
+        {
+            Error($"Game directory not found: {gameDir}");
+            return 1;
+        }
+
+        var modsDir = Path.Combine(gameDir, "mods");
+        if (!Directory.Exists(Path.Combine(modsDir, "loader")))
+            Warning("Mod loader not installed. Run murder-mod-install on the game first.");
+
+        // Dispatch by source type
+        if (source.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase))
+            return AddFromNuGet(source["nuget:".Length..], gameDir);
+        if (source.StartsWith("git:", StringComparison.OrdinalIgnoreCase))
+            return AddFromGit(source["git:".Length..], gameDir);
+        if (source.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            if (source.StartsWith("http://") || source.StartsWith("https://"))
+                return AddFromZipUrl(source, gameDir);
+            return AddFromZipFile(source, gameDir);
+        }
+
+        // Try as NuGet package ID if no prefix
+        if (!source.Contains('/') && !source.Contains('\\') && !source.Contains('.'))
+            return AddFromNuGet(source, gameDir);
+
+        Error($"Unknown source format: {source}");
+        Error("Use nuget:<id>, git:<url>, or a .zip path/URL.");
+        return 1;
+    }
+
+    static int AddFromNuGet(string spec, string gameDir)
+    {
+        // Parse package-id and optional version: "MyMod" or "MyMod@1.0.0"
+        string packageId;
+        string? version = null;
+        if (spec.Contains('@'))
+        {
+            var parts = spec.Split('@', 2);
+            packageId = parts[0].Trim();
+            version = parts[1].Trim();
+        }
+        else
+        {
+            packageId = spec.Trim();
+        }
+
+        if (string.IsNullOrEmpty(packageId))
+        {
+            Error("Empty package ID.");
+            return 1;
+        }
+
+        Info($"Fetching NuGet package: {packageId}" + (version != null ? $" v{version}" : " (latest)") + "...");
+
+        try
+        {
+            // Resolve latest version if not specified
+            version ??= ResolveLatestNuGetVersion(packageId);
+            if (version == null)
+            {
+                Error($"Package '{packageId}' not found on NuGet.");
+                return 1;
+            }
+            Info($"  Version: {version}");
+
+            // Download .nupkg
+            var lowerPkgId = packageId.ToLowerInvariant();
+            var lowerVer = version.ToLowerInvariant();
+            var nupkgUrl = $"https://api.nuget.org/v3-flatcontainer/{lowerPkgId}/{lowerVer}/{lowerPkgId}.{lowerVer}.nupkg";
+            var tempZip = Path.Combine(Path.GetTempPath(), $"{lowerPkgId}.{lowerVer}.nupkg");
+
+            Info($"  Downloading...");
+            DownloadFile(nupkgUrl, tempZip);
+
+            // Extract and install
+            var result = InstallFromZip(tempZip, gameDir);
+            File.Delete(tempZip);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Error($"Failed to install from NuGet: {ex.Message}");
+            return 1;
+        }
+    }
+
+    static string? ResolveLatestNuGetVersion(string packageId)
+    {
+        var url = $"https://api.nuget.org/v3-flatcontainer/{packageId.ToLowerInvariant()}/index.json";
+        try
+        {
+            var json = Http.GetStringAsync(url).GetAwaiter().GetResult();
+            using var doc = JsonDocument.Parse(json);
+            var versions = doc.RootElement.GetProperty("versions");
+            if (versions.GetArrayLength() == 0) return null;
+            // Return last (highest) version
+            return versions[versions.GetArrayLength() - 1].GetString();
+        }
+        catch (HttpRequestException)
+        {
             return null;
         }
+    }
 
-        // Check if the user passed a directory that contains a .app-style layout
-        // (e.g., they passed the Contents/ or Contents/MacOS/ directly)
-        if (Path.GetFileName(inputDir) == "MacOS" &&
-            Path.GetFileName(Path.GetDirectoryName(inputDir) ?? "") == "Contents")
+    static int AddFromGit(string url, string gameDir)
+    {
+        Info($"Cloning git repository: {url}...");
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "murder-mod-git-" + Guid.NewGuid().ToString()[..8]);
+        try
         {
-            // Already pointing at the MacOS dir
-            return inputDir;
+            var result = Run("git", $"clone --depth 1 \"{url}\" \"{tempDir}\"");
+            if (result != 0)
+            {
+                Error("Git clone failed.");
+                return 1;
+            }
+
+            // Check for mod.yaml
+            var yamlPath = Path.Combine(tempDir, "mod.yaml");
+            if (!File.Exists(yamlPath))
+            {
+                Error("Repository does not contain mod.yaml at root.");
+                return 1;
+            }
+
+            // Parse mod ID
+            var modId = ParseYamlField(yamlPath, "Id");
+            if (string.IsNullOrEmpty(modId))
+            {
+                Error("Could not parse Id from mod.yaml");
+                return 1;
+            }
+
+            // Check if it has a .csproj (needs building) or pre-built DLLs
+            var csprojs = Directory.GetFiles(tempDir, "*.csproj");
+            if (csprojs.Length > 0)
+            {
+                Info($"  Found project, building...");
+                var moddedDir = Path.Combine(gameDir, ".modded");
+                var buildOutput = Path.Combine(tempDir, "bin", "Release", "net8.0", "publish");
+                var gameAsmArg = Directory.Exists(moddedDir) ? $" -p:GameAssemblyPath=\"{moddedDir}\"" : "";
+                var buildResult = Run("dotnet", $"publish \"{csprojs[0]}\" -c Release -o \"{buildOutput}\"{gameAsmArg}");
+                if (buildResult != 0)
+                {
+                    Error("Build failed.");
+                    return 1;
+                }
+                return InstallBuiltMod(buildOutput, yamlPath, modId, gameDir);
+            }
+
+            // No .csproj -- treat as pre-built: copy DLLs and mod.yaml directly
+            var dllName = ParseYamlField(yamlPath, "DLL") ?? "";
+            if (!File.Exists(Path.Combine(tempDir, dllName)))
+            {
+                Error($"Pre-built DLL not found: {dllName}. Does the repo need building?");
+                return 1;
+            }
+
+            Info($"  Installing pre-built mod '{modId}'...");
+            var installDir = Path.Combine(gameDir, "mods", modId);
+            Directory.CreateDirectory(installDir);
+            CopyModFiles(tempDir, installDir);
+            Info($"Installed to {installDir}");
+            return 0;
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    static int AddFromZipUrl(string url, string gameDir)
+    {
+        Info($"Downloading: {url}...");
+        var tempZip = Path.Combine(Path.GetTempPath(), "murder-mod-" + Guid.NewGuid().ToString()[..8] + ".zip");
+        try
+        {
+            DownloadFile(url, tempZip);
+            return InstallFromZip(tempZip, gameDir);
+        }
+        catch (Exception ex)
+        {
+            Error($"Download failed: {ex.Message}");
+            return 1;
+        }
+        finally
+        {
+            try { File.Delete(tempZip); } catch { }
+        }
+    }
+
+    static int AddFromZipFile(string zipPath, string gameDir)
+    {
+        zipPath = Path.GetFullPath(zipPath);
+        if (!File.Exists(zipPath))
+        {
+            Error($"File not found: {zipPath}");
+            return 1;
+        }
+        Info($"Installing from: {zipPath}...");
+        return InstallFromZip(zipPath, gameDir);
+    }
+
+    /// <summary>
+    /// Install a mod from a .zip or .nupkg file.
+    /// Looks for mod.yaml in the archive (at root or one level deep).
+    /// For .nupkg, also checks contentFiles/ and content/ directories.
+    /// </summary>
+    static int InstallFromZip(string zipPath, string gameDir)
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "murder-mod-zip-" + Guid.NewGuid().ToString()[..8]);
+        try
+        {
+            ZipFile.ExtractToDirectory(zipPath, tempDir, overwriteFiles: true);
+
+            // Find mod.yaml -- at root, one level deep, or in NuGet content dirs
+            var yamlPath = FindModYaml(tempDir);
+            if (yamlPath == null)
+            {
+                Error("No mod.yaml found in archive.");
+                Error("Expected mod.yaml at archive root or in a subdirectory.");
+                return 1;
+            }
+
+            var modDir = Path.GetDirectoryName(yamlPath)!;
+            var modId = ParseYamlField(yamlPath, "Id");
+            if (string.IsNullOrEmpty(modId))
+            {
+                modId = Path.GetFileName(modDir);
+                if (string.IsNullOrEmpty(modId)) modId = "unknown-mod";
+            }
+
+            Info($"  Found mod: {modId}");
+
+            var installDir = Path.Combine(gameDir, "mods", modId);
+            Directory.CreateDirectory(installDir);
+            CopyModFiles(modDir, installDir);
+
+            Info($"Installed to {installDir}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Error($"Failed to extract: {ex.Message}");
+            return 1;
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    static string? FindModYaml(string dir)
+    {
+        // Root level
+        var root = Path.Combine(dir, "mod.yaml");
+        if (File.Exists(root)) return root;
+
+        // One level deep (e.g., zip contains a folder)
+        foreach (var sub in Directory.GetDirectories(dir))
+        {
+            var subYaml = Path.Combine(sub, "mod.yaml");
+            if (File.Exists(subYaml)) return subYaml;
         }
 
-        // Flat directory - check it has either the executable or resources/
-        return inputDir;
+        // NuGet package layout: contentFiles/any/any/ or content/
+        foreach (var searchDir in new[] { "contentFiles", "content" })
+        {
+            var contentDir = Path.Combine(dir, searchDir);
+            if (!Directory.Exists(contentDir)) continue;
+            foreach (var yaml in Directory.GetFiles(contentDir, "mod.yaml", SearchOption.AllDirectories))
+                return yaml;
+        }
+
+        return null;
     }
+
+    /// <summary>
+    /// Copy mod files (DLLs, native libs, mod.yaml, etc.) from source to install dir.
+    /// Skips files already provided by the loader or engine.
+    /// </summary>
+    static void CopyModFiles(string sourceDir, string installDir)
+    {
+        var skipFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "MurderModLoader.API.dll", "0Harmony.dll", "Murder.dll",
+            "Bang.dll", "FNA.dll", "YamlDotNet.dll"
+        };
+        // Skip NuGet metadata files
+        var skipExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".nuspec", ".xml", ".json"
+        };
+
+        foreach (var file in Directory.GetFiles(sourceDir))
+        {
+            var name = Path.GetFileName(file);
+            var ext = Path.GetExtension(name);
+            if (skipFiles.Contains(name)) continue;
+            // Skip NuGet metadata but keep mod.yaml
+            if (skipExtensions.Contains(ext) && name != "mod.yaml") continue;
+            // Skip PDB in release installs? No, keep them for debugging.
+            File.Copy(file, Path.Combine(installDir, name), true);
+        }
+
+        // Copy native libs from runtimes/ for current platform
+        var runtimesDir = Path.Combine(sourceDir, "runtimes");
+        if (Directory.Exists(runtimesDir))
+        {
+            var ridPrefix = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win"
+                : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "osx" : "linux";
+
+            foreach (var platformDir in Directory.GetDirectories(runtimesDir))
+            {
+                if (!Path.GetFileName(platformDir).StartsWith(ridPrefix)) continue;
+                var nativeDir = Path.Combine(platformDir, "native");
+                if (!Directory.Exists(nativeDir)) continue;
+                foreach (var lib in Directory.GetFiles(nativeDir))
+                    File.Copy(lib, Path.Combine(installDir, Path.GetFileName(lib)), true);
+            }
+        }
+    }
+
+    static int InstallBuiltMod(string buildOutput, string yamlPath, string modId, string gameDir)
+    {
+        var installDir = Path.Combine(gameDir, "mods", modId);
+        Directory.CreateDirectory(installDir);
+
+        CopyModFiles(buildOutput, installDir);
+        File.Copy(yamlPath, Path.Combine(installDir, "mod.yaml"), true);
+
+        Info($"Installed to {installDir}");
+        return 0;
+    }
+
+    static void DownloadFile(string url, string destPath)
+    {
+        using var response = Http.GetAsync(url).GetAwaiter().GetResult();
+        response.EnsureSuccessStatusCode();
+        using var fs = File.Create(destPath);
+        response.Content.CopyToAsync(fs).GetAwaiter().GetResult();
+    }
+
+    static string? ParseYamlField(string yamlPath, string field)
+    {
+        foreach (var line in File.ReadLines(yamlPath))
+        {
+            if (line.StartsWith($"{field}:"))
+                return line[$"{field}:".Length..].Trim();
+        }
+        return null;
+    }
+
+    // ─── build command ──────────────────────────────────────────────────────────
 
     static int BuildMod(string[] args)
     {
@@ -200,14 +552,8 @@ class Program
             return 1;
         }
 
-        // Parse mod ID from yaml (simple parse, no dependency on YamlDotNet)
-        var modId = "";
-        var modDll = "";
-        foreach (var line in File.ReadLines(yamlPath))
-        {
-            if (line.StartsWith("Id:")) modId = line["Id:".Length..].Trim();
-            if (line.StartsWith("DLL:")) modDll = line["DLL:".Length..].Trim();
-        }
+        var modId = ParseYamlField(yamlPath, "Id") ?? "";
+        var modDll = ParseYamlField(yamlPath, "DLL") ?? "";
         if (string.IsNullOrEmpty(modId))
         {
             Error("Could not parse Id from mod.yaml");
@@ -234,50 +580,29 @@ class Program
             return 1;
         }
 
-        // Install to game
-        var installDir = Path.Combine(gameDir, "mods", modId);
-        Directory.CreateDirectory(installDir);
+        return InstallBuiltMod(buildOutput, yamlPath, modId, gameDir);
+    }
 
-        // DLLs already provided by the loader or game -- don't duplicate
-        var skipFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "MurderModLoader.API.dll", "0Harmony.dll", "Murder.dll",
-            "Bang.dll", "FNA.dll", "YamlDotNet.dll"
-        };
+    // ─── game detection ─────────────────────────────────────────────────────────
 
-        // Copy managed DLLs
-        foreach (var file in Directory.GetFiles(buildOutput, "*.dll"))
+    static string? ResolveGameDir(string inputDir)
+    {
+        if (inputDir.EndsWith(".app", StringComparison.OrdinalIgnoreCase) ||
+            inputDir.EndsWith(".app/", StringComparison.OrdinalIgnoreCase) ||
+            inputDir.EndsWith(".app" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
         {
-            var name = Path.GetFileName(file);
-            if (!skipFiles.Contains(name))
-                File.Copy(file, Path.Combine(installDir, name), true);
+            var macosDir = Path.Combine(inputDir, "Contents", "MacOS");
+            if (Directory.Exists(macosDir))
+                return macosDir;
+            Error($"  .app bundle missing Contents/MacOS/: {inputDir}");
+            return null;
         }
 
-        // Copy native libraries for the current platform from runtimes/
-        var runtimesDir = Path.Combine(buildOutput, "runtimes");
-        if (Directory.Exists(runtimesDir))
-        {
-            // Match current OS runtime identifier prefix
-            var ridPrefix = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win"
-                : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "osx" : "linux";
+        if (Path.GetFileName(inputDir) == "MacOS" &&
+            Path.GetFileName(Path.GetDirectoryName(inputDir) ?? "") == "Contents")
+            return inputDir;
 
-            foreach (var platformDir in Directory.GetDirectories(runtimesDir))
-            {
-                if (!Path.GetFileName(platformDir).StartsWith(ridPrefix)) continue;
-                var nativeDir = Path.Combine(platformDir, "native");
-                if (!Directory.Exists(nativeDir)) continue;
-                foreach (var nativeLib in Directory.GetFiles(nativeDir))
-                    File.Copy(nativeLib, Path.Combine(installDir, Path.GetFileName(nativeLib)), true);
-            }
-        }
-
-        // Copy mod.yaml
-        File.Copy(yamlPath, Path.Combine(installDir, "mod.yaml"), true);
-
-        Info($"Installed to {installDir}");
-        Info($"  DLL: {modDll}");
-        Info($"  Launch the game to test.");
-        return 0;
+        return inputDir;
     }
 
     static string? FindGameExecutable(string gameDir)
@@ -288,17 +613,14 @@ class Program
         {
             var name = Path.GetFileName(file);
 
-            // Skip known non-game files
             if (skipPrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
                 continue;
             if (name.EndsWith(".dll") || name.EndsWith(".dylib") || name.EndsWith(".so") || name.EndsWith(".lib"))
                 continue;
 
-            // Windows: .exe
             if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                 return file;
 
-            // Unix: executable binary (no extension, check magic bytes)
             if (!name.Contains('.'))
             {
                 try
@@ -307,10 +629,8 @@ class Program
                     using var fs = File.OpenRead(file);
                     if (fs.Read(magic) == 4)
                     {
-                        // ELF
                         if (magic[0] == 0x7F && magic[1] == (byte)'E' && magic[2] == (byte)'L' && magic[3] == (byte)'F')
                             return file;
-                        // Mach-O (various)
                         if ((magic[0] == 0xCF && magic[1] == 0xFA) || (magic[0] == 0xFE && magic[1] == 0xED) ||
                             (magic[0] == 0xCA && magic[1] == 0xFE) || (magic[0] == 0xBE && magic[1] == 0xBA))
                             return file;
@@ -322,20 +642,12 @@ class Program
         return null;
     }
 
-    /// <summary>
-    /// Detect the real entry-point assembly name from an extracted .modded/ directory.
-    /// The executable filename may differ from the bundled assembly name
-    /// (e.g. executable "NeoCityExpress" but assembly "LDGame.dll").
-    /// Looks for *.runtimeconfig.json to identify the entry-point name.
-    /// </summary>
     static string? DetectEntryPointName(string moddedDir)
     {
-        // The entry-point assembly always has a matching .runtimeconfig.json
         var configs = Directory.GetFiles(moddedDir, "*.runtimeconfig.json");
         if (configs.Length == 1)
             return Path.GetFileNameWithoutExtension(configs[0]).Replace(".runtimeconfig", "");
 
-        // Multiple configs: pick the one that also has a matching .deps.json and .dll
         foreach (var config in configs)
         {
             var name = Path.GetFileNameWithoutExtension(config).Replace(".runtimeconfig", "");
@@ -343,17 +655,16 @@ class Program
                 File.Exists(Path.Combine(moddedDir, $"{name}.dll")))
                 return name;
         }
-
         return null;
     }
 
+    // ─── SDK detection ──────────────────────────────────────────────────────────
+
     static string? DetectDotnetSdk(string gameExe, string inputDir)
     {
-        // Determine game architecture
         var gameArch = DetectArchitecture(gameExe);
         Info($"Game architecture: {gameArch ?? "unknown"}");
 
-        // Check standard dotnet install locations
         var candidates = new List<string>();
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -374,13 +685,10 @@ class Program
             candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet"));
         }
 
-        // Also check PATH
         var pathDotnet = FindInPath(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "dotnet.exe" : "dotnet");
         if (pathDotnet != null)
             candidates.Insert(0, Path.GetDirectoryName(pathDotnet)!);
 
-        // Check the original input directory's parent for a local SDK
-        // (works for both flat dirs and .app bundles)
         var parentDir = Path.GetDirectoryName(inputDir);
         if (parentDir != null)
         {
@@ -392,13 +700,11 @@ class Program
         {
             if (!Directory.Exists(sdkDir)) continue;
 
-            // Look for .NET 8 runtime
             var runtimesDir = Path.Combine(sdkDir, "shared", "Microsoft.NETCore.App");
             if (!Directory.Exists(runtimesDir)) continue;
 
             foreach (var rtDir in Directory.GetDirectories(runtimesDir, "8.*").OrderByDescending(d => d))
             {
-                // Check architecture match if we know the game arch
                 if (gameArch != null)
                 {
                     var jitLib = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "clrjit.dll" :
@@ -408,7 +714,7 @@ class Program
                     {
                         var jitArch = DetectArchitecture(jitPath);
                         if (jitArch != null && jitArch != gameArch)
-                            continue; // Architecture mismatch
+                            continue;
                     }
                 }
                 return sdkDir;
@@ -425,13 +731,11 @@ class Program
             using var fs = File.OpenRead(filePath);
             fs.Read(magic);
 
-            // Mach-O
             if (magic[0] == 0xCF && magic[1] == 0xFA && magic[2] == 0xED && magic[3] == 0xFE)
             {
                 var cpu = BitConverter.ToUInt32(magic, 4);
                 return cpu == 0x01000007 ? "x64" : cpu == 0x0100000C ? "arm64" : null;
             }
-            // ELF
             if (magic[0] == 0x7F && magic[1] == (byte)'E' && magic[2] == (byte)'L' && magic[3] == (byte)'F')
             {
                 fs.Position = 18;
@@ -440,7 +744,6 @@ class Program
                 var machine = BitConverter.ToUInt16(machineBytes);
                 return machine == 62 ? "x64" : machine == 183 ? "arm64" : null;
             }
-            // PE
             if (magic[0] == (byte)'M' && magic[1] == (byte)'Z')
             {
                 fs.Position = 60;
@@ -458,6 +761,8 @@ class Program
         return null;
     }
 
+    // ─── utilities ──────────────────────────────────────────────────────────────
+
     static string? FindInPath(string name)
     {
         var pathVar = Environment.GetEnvironmentVariable("PATH") ?? "";
@@ -472,7 +777,6 @@ class Program
 
     static string? FindLoaderPublish(string? dotnetDir)
     {
-        // Look relative to this executable and working directory
         var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? ".";
         var candidates = new List<string>
         {
@@ -481,7 +785,6 @@ class Program
             "publish/loader",
             "loader",
         };
-        // Also check if the loader is in the same dir as the installer
         candidates.Add(exeDir);
 
         foreach (var dir in candidates)
@@ -496,7 +799,6 @@ class Program
     {
         Directory.CreateDirectory(outputDir);
 
-        // Try murder-unpack first
         var murderUnpack = FindInPath("murder-unpack");
         if (murderUnpack != null)
         {
@@ -531,7 +833,6 @@ class Program
                 var fw = frameworks[0];
                 var name = fw.GetProperty("name").GetString() ?? "Microsoft.NETCore.App";
 
-                // Rewrite as framework-dependent
                 var newConfig = new Dictionary<string, object>
                 {
                     ["runtimeOptions"] = new Dictionary<string, object>
@@ -570,21 +871,17 @@ class Program
         var nativeDir = Path.Combine(moddedDir, "runtimes", runtimeId, "native");
         Directory.CreateDirectory(nativeDir);
 
-        // Copy native libs from game root
         foreach (var ext in nativeExtensions)
         {
             foreach (var lib in Directory.GetFiles(gameDir, $"*{ext}"))
             {
                 var name = Path.GetFileName(lib);
-                // Skip the game executable itself on Windows
                 if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
-
                 File.Copy(lib, Path.Combine(moddedDir, name), true);
                 File.Copy(lib, Path.Combine(nativeDir, name), true);
             }
         }
 
-        // Copy FMOD native libs from resources/fmod/pc/
         var fmodDir = Path.Combine(gameDir, "resources", "fmod", "pc");
         if (Directory.Exists(fmodDir))
         {
@@ -602,7 +899,6 @@ class Program
 
     static void CreateLaunchScript(string gameDir, string gameName, string dotnetDir, string inputDir)
     {
-        // Store SDK path relative to the directory containing the launch script
         var relativeSdk = Path.GetRelativePath(gameDir, dotnetDir);
         var useRelative = !relativeSdk.StartsWith("..");
 
@@ -634,7 +930,6 @@ class Program
                 ? $"\"$SCRIPT_DIR/{relativeSdk}/dotnet\""
                 : $"\"{dotnetDir}/dotnet\"";
 
-            // Detect if we need arch -x86_64 (macOS ARM64 host + x64 game)
             var gameArch = DetectArchitecture(Path.Combine(gameDir, ".modded", $"{gameName}.dll")) ??
                            DetectArchitecture(FindGameExecutable(gameDir) ?? "");
             var needsRosetta = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) &&
