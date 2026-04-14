@@ -4,25 +4,37 @@ Mod loader for [Murder Engine](https://github.com/isadorasophia/murder) games. U
 
 ## Requirements
 
-- [murder-unpack](https://github.com/yuna0x0/murder-unpack) (for bundle extraction)
+- [murder-unpack](https://github.com/yuna0x0/murder-unpack) (`uv tool install murder-unpack`)
 - .NET 8 SDK matching the game's architecture (x64 game needs x64 SDK)
 
-## Setup
+## Installation
+
+### Install the tools
 
 ```bash
-# Build
-git clone https://github.com/yuna0x0/murder-mod-loader.git
-cd murder-mod-loader
-dotnet publish src/MurderModLoader -c Release -o publish/loader/
-dotnet publish src/MurderModLoader.Installer -c Release -o publish/installer/
+# Install murder-unpack (bundle extraction)
+uv tool install murder-unpack
 
-# Install into a game (auto-detects SDK)
-dotnet run --project src/MurderModLoader.Installer -- "/path/to/game"
+# Install the mod loader installer
+dotnet tool install -g murder-mod-install
+```
 
-# Or specify the .NET SDK path manually
-dotnet run --project src/MurderModLoader.Installer -- "/path/to/game" "/path/to/dotnet-sdk-8.0"
+### Install into a game
 
-# Launch
+```bash
+# Auto-detects SDK, extracts bundle, sets up mod loader
+murder-mod-install "/path/to/game"
+
+# macOS .app bundles are also supported
+murder-mod-install "/path/to/Game.app"
+
+# Specify .NET SDK path manually if needed
+murder-mod-install "/path/to/game" "/path/to/dotnet-sdk-8.0"
+```
+
+### Launch
+
+```bash
 /path/to/game/launch-modded.sh    # Linux / macOS
 /path/to/game/launch-modded.bat   # Windows
 ```
@@ -55,18 +67,36 @@ public class MyMod : IMurderMod
 }
 ```
 
-For game type references (Murder, Bang), set `GameAssemblyPath` in your `.csproj` to the game's `.modded/` directory, or let the build command handle it.
+Reference the mod API in your `.csproj`:
+
+```xml
+<PackageReference Include="MurderModLoader.API" Version="0.1.*" />
+```
+
+For game type references (Murder, Bang, FNA), set `GameAssemblyPath` in your `.csproj` to the game's `.modded/` directory, or let the build command handle it.
 
 ### Build and install a mod
 
 ```bash
-dotnet run --project src/MurderModLoader.Installer -- build <mod-dir> <game-dir>
+murder-mod-install build <mod-dir> <game-dir>
+```
+
+### Disabling a mod
+
+Place a `.disabled` file in the mod's directory, or set `Enabled: false` in `mod.yaml`.
+
+## Building from Source
+
+```bash
+git clone https://github.com/yuna0x0/murder-mod-loader.git
+cd murder-mod-loader
+dotnet build
 ```
 
 ## Limitations
 
-- **SingleFileBundle only** — NativeAOT games can't be patched at runtime
-- **Architecture match** — The .NET SDK must match the game (x64 game needs x64 SDK)
+- **SingleFileBundle only** -- NativeAOT games can't be patched at runtime
+- **Architecture match** -- the .NET SDK must match the game (x64 game needs x64 SDK)
 
 ## License
 

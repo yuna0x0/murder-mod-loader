@@ -5,5 +5,20 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>murder-mod-install</AssemblyName>
+
+    <!-- NuGet dotnet tool metadata -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>murder-mod-install</ToolCommandName>
+    <PackageId>murder-mod-install</PackageId>
+    <Description>Installer for murder-mod-loader — sets up mod loading for Murder Engine games</Description>
+    <Authors>yuna0x0</Authors>
+    <License>MIT</License>
+    <PackageProjectUrl>https://github.com/yuna0x0/murder-mod-loader</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/yuna0x0/murder-mod-loader</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
 </Project>

@@ -114,8 +114,10 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Pack
-        run: dotnet pack src/MurderModLoader.API -c Release -o artifacts/
+      - name: Pack API and Installer tool
+        run: |
+          dotnet pack src/MurderModLoader.API -c Release -o artifacts/
+          dotnet pack src/MurderModLoader.Installer -c Release -o artifacts/
 
       - name: NuGet login
         uses: NuGet/login@v1
@@ -125,7 +127,7 @@ jobs:
 
       - name: Publish
         run: >
-          dotnet nuget push artifacts/*.nupkg
+          dotnet nuget push "artifacts/*.nupkg"
           --source https://api.nuget.org/v3/index.json
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --skip-duplicate
