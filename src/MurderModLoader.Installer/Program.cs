@@ -82,9 +82,16 @@ class Program
         if (!ExtractBundle(gameExe, moddedDir))
             return 1;
 
+        // Detect the real entry-point DLL name from extracted bundle.
+        // The executable filename (e.g. "NeoCityExpress") may differ from the
+        // actual assembly name inside the bundle (e.g. "LDGame").
+        var entryName = DetectEntryPointName(moddedDir) ?? gameName;
+        if (entryName != gameName)
+            Info($"  Bundle entry point: {entryName} (differs from executable: {gameName})");
+
         // Step 2: Fix runtimeconfig
         Info("Configuring runtime...");
-        FixRuntimeConfig(moddedDir, gameName);
+        FixRuntimeConfig(moddedDir, entryName);
 
         // Step 3: Copy native libraries
         Info("Copying native libraries...");
@@ -99,7 +106,7 @@ class Program
 
         // Step 5: Create launch scripts
         Info("Creating launch scripts...");
-        CreateLaunchScript(gameDir, gameName, dotnetDir, inputDir);
+        CreateLaunchScript(gameDir, entryName, dotnetDir, inputDir);
 
         Info("\nInstallation complete!");
         Info($"  Mods directory: {Path.Combine(gameDir, "mods")}");
@@ -312,6 +319,31 @@ class Program
                 catch { }
             }
         }
+        return null;
+    }
+
+    /// <summary>
+    /// Detect the real entry-point assembly name from an extracted .modded/ directory.
+    /// The executable filename may differ from the bundled assembly name
+    /// (e.g. executable "NeoCityExpress" but assembly "LDGame.dll").
+    /// Looks for *.runtimeconfig.json to identify the entry-point name.
+    /// </summary>
+    static string? DetectEntryPointName(string moddedDir)
+    {
+        // The entry-point assembly always has a matching .runtimeconfig.json
+        var configs = Directory.GetFiles(moddedDir, "*.runtimeconfig.json");
+        if (configs.Length == 1)
+            return Path.GetFileNameWithoutExtension(configs[0]).Replace(".runtimeconfig", "");
+
+        // Multiple configs: pick the one that also has a matching .deps.json and .dll
+        foreach (var config in configs)
+        {
+            var name = Path.GetFileNameWithoutExtension(config).Replace(".runtimeconfig", "");
+            if (File.Exists(Path.Combine(moddedDir, $"{name}.deps.json")) &&
+                File.Exists(Path.Combine(moddedDir, $"{name}.dll")))
+                return name;
+        }
+
         return null;
     }
 

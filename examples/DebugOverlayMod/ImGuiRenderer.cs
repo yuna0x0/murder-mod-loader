@@ -158,12 +158,19 @@ namespace DebugOverlayMod
         {
             var io = ImGui.GetIO();
 
-            // FNA uses TextInputEXT instead of MonoGame's TextInput
+#if USE_FNA
             TextInputEXT.TextInput += c =>
             {
                 if (c == '\t') return;
                 io.AddInputCharacter(c);
             };
+#else
+            _game.Window.TextInput += (s, a) =>
+            {
+                if (a.Character == '\t') return;
+                io.AddInputCharacter(a.Character);
+            };
+#endif
         }
 
         /// <summary>

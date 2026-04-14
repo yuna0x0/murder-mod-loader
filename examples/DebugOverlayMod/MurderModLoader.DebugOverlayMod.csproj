@@ -13,10 +13,12 @@
   </ItemGroup>
 
   <!-- Reference game assemblies for type access.
-       Set GameAssemblyPath to the directory containing Murder.dll, Bang.dll, FNA.dll.
+       Set GameAssemblyPath to the directory containing Murder.dll, Bang.dll, and
+       the XNA framework (FNA.dll or MonoGame.Framework.dll).
        The build command sets this automatically from the game's .modded/ directory. -->
   <PropertyGroup>
     <GameAssemblyPath Condition="'$(GameAssemblyPath)' == ''">..\..\lib</GameAssemblyPath>
+    <DefineConstants Condition="Exists('$(GameAssemblyPath)\FNA.dll')">$(DefineConstants);USE_FNA</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Murder">
@@ -27,8 +29,13 @@
       <HintPath>$(GameAssemblyPath)\Bang.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="FNA">
+    <!-- Murder Engine games may use FNA or MonoGame as XNA implementation -->
+    <Reference Include="FNA" Condition="Exists('$(GameAssemblyPath)\FNA.dll')">
       <HintPath>$(GameAssemblyPath)\FNA.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoGame.Framework" Condition="Exists('$(GameAssemblyPath)\MonoGame.Framework.dll')">
+      <HintPath>$(GameAssemblyPath)\MonoGame.Framework.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
