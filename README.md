@@ -129,6 +129,10 @@ dotnet run --project src/MurderModLoader.Installer -- add <source> <game-dir>
 - **SingleFileBundle only** -- NativeAOT games can't be patched at runtime
 - **Architecture match** -- the .NET SDK must match the game (x64 game needs x64 SDK)
 
+## AI Disclosure
+
+AI was used to assist in the creation of some of this tool's base code.
+
 ## License
 
 [MIT](LICENSE)
