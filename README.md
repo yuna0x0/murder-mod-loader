@@ -39,6 +39,27 @@ murder-mod-install "/path/to/game" "/path/to/dotnet-sdk-8.0"
 /path/to/game/launch-modded.bat   # Windows
 ```
 
+### Steam Proton / Wine (Linux playing Windows-only games)
+
+Some Murder Engine games only ship a Windows build. The mod loader supports
+these via Proton by using a Windows .NET 8 runtime to run the extracted bundle
+inside Wine.
+
+1. Download the **Windows x64 .NET 8 runtime** (zip) from
+   [Microsoft](https://dotnet.microsoft.com/download/dotnet/8.0) and extract it.
+
+2. Install the mod loader (auto-detects Proton when it finds a `.exe` game):
+
+   ```bash
+   murder-mod-install "/path/to/game" "/path/to/dotnet-runtime-win-x64"
+   ```
+
+3. Set Steam launch options (right-click game > Properties > Launch Options):
+
+   ```
+   ./launch-modded.sh %command%
+   ```
+
 ## Installing Mods
 
 ```bash

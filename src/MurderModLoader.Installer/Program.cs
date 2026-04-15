@@ -7,10 +7,37 @@ using System.Text.Json;
 /// <summary>
 /// Cross-platform installer for murder-mod-loader.
 /// Extracts a Murder Engine single-file bundle and sets up the mod loader.
+/// Supports native platforms and Steam Proton (Windows games on Linux via Wine).
 /// </summary>
 class Program
 {
     static readonly HttpClient Http = new();
+
+    // True when installing a Windows game on a non-Windows host (Proton/Wine).
+    // Affects native library extensions, launch script format, and SDK detection.
+    static bool ProtonMode;
+
+    // Whether the target platform is Windows (native Windows OR Proton/Wine).
+    static bool TargetIsWindows => ProtonMode || RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
+    // Target platform's runtime identifier prefix and native library extension.
+    static string TargetRidPrefix => TargetIsWindows ? "win"
+        : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "osx" : "linux";
+
+    /// <summary>
+    /// Auto-detect Proton: non-Windows host with a Windows (.exe) game executable.
+    /// </summary>
+    static void AutoDetectProton(string gameDir)
+    {
+        if (ProtonMode || RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return;
+        var gameExe = FindGameExecutable(gameDir);
+        if (gameExe != null && gameExe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            Info("Detected Windows game on non-Windows host (Proton/Wine mode).");
+            ProtonMode = true;
+        }
+    }
 
     static int Main(string[] args)
     {
@@ -18,6 +45,16 @@ class Program
         {
             PrintUsage();
             return args.Length < 1 ? 1 : 0;
+        }
+
+        // Extract --proton flag before subcommand dispatch
+        ProtonMode = args.Contains("--proton");
+        args = args.Where(a => a != "--proton").ToArray();
+
+        if (args.Length < 1)
+        {
+            PrintUsage();
+            return 1;
         }
 
         // Subcommand dispatch
@@ -57,16 +94,30 @@ class Program
         var gameName = Path.GetFileNameWithoutExtension(gameExe);
         Info($"Game: {gameName}");
 
-        // Find or auto-detect dotnet runtime
+        AutoDetectProton(gameDir);
+
+        // Find or auto-detect dotnet runtime.
+        // Proton mode requires a Windows .NET 8 runtime (dotnet.exe, not dotnet).
+        var dotnetExeName = TargetIsWindows ? "dotnet.exe" : "dotnet";
         dotnetDir ??= DetectDotnetSdk(gameExe, inputDir);
         if (dotnetDir == null)
         {
             Error("Could not find a compatible .NET 8 SDK.");
-            Error("Please provide the path as the second argument.");
-            Error("Download from: https://dotnet.microsoft.com/download/dotnet/8.0");
+            if (ProtonMode)
+            {
+                Error("Proton mode requires a Windows .NET 8 runtime.");
+                Error("Download the Windows x64 runtime zip from:");
+                Error("  https://dotnet.microsoft.com/download/dotnet/8.0");
+                Error("Extract it and provide the path as the second argument.");
+            }
+            else
+            {
+                Error("Please provide the path as the second argument.");
+                Error("Download from: https://dotnet.microsoft.com/download/dotnet/8.0");
+            }
             return 1;
         }
-        var dotnetExe = Path.Combine(dotnetDir, RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "dotnet.exe" : "dotnet");
+        var dotnetExe = Path.Combine(dotnetDir, dotnetExeName);
         if (!File.Exists(dotnetExe))
         {
             Error($"dotnet executable not found at: {dotnetExe}");
@@ -110,11 +161,20 @@ class Program
 
         // Step 5: Create launch scripts
         Info("Creating launch scripts...");
-        CreateLaunchScript(gameDir, entryName, dotnetDir, inputDir);
+        if (ProtonMode)
+            CreateProtonLaunchScripts(gameDir, gameName, entryName, dotnetDir);
+        else
+            CreateLaunchScript(gameDir, entryName, dotnetDir);
 
         Info("\nInstallation complete!");
         Info($"  Mods directory: {Path.Combine(gameDir, "mods")}");
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (ProtonMode)
+        {
+            Info("");
+            Info("Set Steam launch options (game Properties > Launch Options):");
+            Info($"  ./launch-modded.sh %command%");
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             Info($"  Launch: {Path.Combine(gameDir, "launch-modded.bat")}");
         else
             Info($"  Launch: {Path.Combine(gameDir, "launch-modded.sh")}");
@@ -131,6 +191,9 @@ class Program
         Console.WriteLine("  murder-mod-install build <mod-dir> <game-dir>   Build and install a mod from source");
         Console.WriteLine("  murder-mod-install add <source> <game-dir>      Install a mod from NuGet, git, or zip");
         Console.WriteLine();
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --proton    Proton/Wine mode (auto-detected for .exe games on non-Windows hosts)");
+        Console.WriteLine();
         Console.WriteLine("Sources for 'add':");
         Console.WriteLine("  nuget:<package-id>          NuGet package (latest version)");
         Console.WriteLine("  nuget:<package-id>@<ver>    NuGet package (specific version)");
@@ -138,7 +201,12 @@ class Program
         Console.WriteLine("  https://.../*.zip           Zip file URL (direct download)");
         Console.WriteLine("  /path/to/mod.zip            Local zip file");
         Console.WriteLine();
-        Console.WriteLine("Supports both flat game directories and macOS .app bundles.");
+        Console.WriteLine("Supports flat game directories and macOS .app bundles.");
+        Console.WriteLine();
+        Console.WriteLine("Proton/Wine (Linux playing Windows-only games via Steam Proton):");
+        Console.WriteLine("  Requires a Windows .NET 8 runtime (download the zip from Microsoft).");
+        Console.WriteLine("  murder-mod-install <game-dir> <windows-dotnet-runtime-dir>");
+        Console.WriteLine("  Then set Steam launch options: ./launch-modded.sh %command%");
     }
 
     // ─── add command ────────────────────────────────────────────────────────────
@@ -167,6 +235,8 @@ class Program
             Error($"Game directory not found: {gameDir}");
             return 1;
         }
+
+        AutoDetectProton(gameDir);
 
         var modsDir = Path.Combine(gameDir, "mods");
         if (!Directory.Exists(Path.Combine(modsDir, "loader")))
@@ -303,6 +373,15 @@ class Program
             {
                 Info($"  Found project, building...");
                 var moddedDir = Path.Combine(gameDir, ".modded");
+                if (!Directory.Exists(moddedDir))
+                {
+                    var gameExe = FindGameExecutable(gameDir);
+                    if (gameExe != null)
+                    {
+                        Info("  Extracting game assemblies for build references...");
+                        ExtractBundle(gameExe, moddedDir);
+                    }
+                }
                 var buildOutput = Path.Combine(tempDir, "bin", "Release", "net8.0", "publish");
                 var gameAsmArg = Directory.Exists(moddedDir) ? $" -p:GameAssemblyPath=\"{moddedDir}\"" : "";
                 var buildResult = Run("dotnet", $"publish \"{csprojs[0]}\" -c Release -o \"{buildOutput}\"{gameAsmArg}");
@@ -469,12 +548,11 @@ class Program
             File.Copy(file, Path.Combine(installDir, name), true);
         }
 
-        // Copy native libs from runtimes/ for current platform
+        // Copy native libs from runtimes/ for target platform
         var runtimesDir = Path.Combine(sourceDir, "runtimes");
         if (Directory.Exists(runtimesDir))
         {
-            var ridPrefix = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win"
-                : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "osx" : "linux";
+            var ridPrefix = TargetRidPrefix;
 
             foreach (var platformDir in Directory.GetDirectories(runtimesDir))
             {
@@ -568,10 +646,24 @@ class Program
             return 1;
         }
 
-        // Build -- point GameAssemblyPath to the game's extracted assemblies
+        // Ensure game assemblies are extracted for build-time references.
+        // If .modded/ doesn't exist yet (e.g., building before installing), extract on demand.
         Info($"Building mod '{modId}'...");
         var buildOutput = Path.Combine(modDir, "bin", "Release", "net8.0", "publish");
         var moddedDir = Path.Combine(gameDir, ".modded");
+        if (!Directory.Exists(moddedDir))
+        {
+            var gameExe = FindGameExecutable(gameDir);
+            if (gameExe != null)
+            {
+                Info("Extracting game assemblies for build references...");
+                if (!ExtractBundle(gameExe, moddedDir))
+                {
+                    Error("Could not extract game assemblies. Install murder-unpack: uv tool install murder-unpack");
+                    return 1;
+                }
+            }
+        }
         var gameAsmArg = Directory.Exists(moddedDir) ? $" -p:GameAssemblyPath=\"{moddedDir}\"" : "";
         var buildResult = Run("dotnet", $"publish \"{csprojs[0]}\" -c Release -o \"{buildOutput}\"{gameAsmArg}");
         if (buildResult != 0)
@@ -666,35 +758,53 @@ class Program
         Info($"Game architecture: {gameArch ?? "unknown"}");
 
         var candidates = new List<string>();
+        var parentDir = Path.GetDirectoryName(inputDir);
 
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (ProtonMode)
         {
-            candidates.Add(@"C:\Program Files\dotnet");
-            candidates.Add(@"C:\Program Files (x86)\dotnet");
-            candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet"));
-        }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
-            candidates.Add("/usr/local/share/dotnet");
-            candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet"));
+            // Proton: look for Windows .NET runtime near the game.
+            // System .NET paths are native (Linux), not usable under Wine.
+            if (parentDir != null)
+            {
+                foreach (var dir in Directory.GetDirectories(parentDir, "dotnet*"))
+                    candidates.Add(dir);
+            }
         }
         else
         {
-            candidates.Add("/usr/share/dotnet");
-            candidates.Add("/usr/local/share/dotnet");
-            candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet"));
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                candidates.Add(@"C:\Program Files\dotnet");
+                candidates.Add(@"C:\Program Files (x86)\dotnet");
+                candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet"));
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                candidates.Add("/usr/local/share/dotnet");
+                candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet"));
+            }
+            else
+            {
+                candidates.Add("/usr/share/dotnet");
+                candidates.Add("/usr/local/share/dotnet");
+                candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet"));
+            }
+
+            var pathDotnet = FindInPath(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "dotnet.exe" : "dotnet");
+            if (pathDotnet != null)
+                candidates.Insert(0, Path.GetDirectoryName(pathDotnet)!);
+
+            if (parentDir != null)
+            {
+                foreach (var dir in Directory.GetDirectories(parentDir, "dotnet-sdk-8*"))
+                    candidates.Insert(0, dir);
+            }
         }
 
-        var pathDotnet = FindInPath(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "dotnet.exe" : "dotnet");
-        if (pathDotnet != null)
-            candidates.Insert(0, Path.GetDirectoryName(pathDotnet)!);
-
-        var parentDir = Path.GetDirectoryName(inputDir);
-        if (parentDir != null)
-        {
-            foreach (var dir in Directory.GetDirectories(parentDir, "dotnet-sdk-8*"))
-                candidates.Insert(0, dir);
-        }
+        // Determine which clrjit to look for when verifying architecture match.
+        // Proton targets Windows, so look for clrjit.dll even on Linux/macOS host.
+        var jitLib = TargetIsWindows ? "clrjit.dll" :
+                     RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "libclrjit.dylib" : "libclrjit.so";
 
         foreach (var sdkDir in candidates.Distinct())
         {
@@ -707,8 +817,6 @@ class Program
             {
                 if (gameArch != null)
                 {
-                    var jitLib = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "clrjit.dll" :
-                                 RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "libclrjit.dylib" : "libclrjit.so";
                     var jitPath = Path.Combine(rtDir, jitLib);
                     if (File.Exists(jitPath))
                     {
@@ -921,12 +1029,10 @@ class Program
 
     static void CopyNativeLibs(string gameDir, string moddedDir)
     {
-        string[] nativeExtensions = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? [".dll"]
+        string[] nativeExtensions = TargetIsWindows ? [".dll"]
             : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? [".dylib"] : [".so"];
 
-        string runtimeId = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win"
-            : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "osx" : "linux";
+        string runtimeId = TargetRidPrefix;
 
         var nativeDir = Path.Combine(moddedDir, "runtimes", runtimeId, "native");
         Directory.CreateDirectory(nativeDir);
@@ -957,7 +1063,67 @@ class Program
         }
     }
 
-    static void CreateLaunchScript(string gameDir, string gameName, string dotnetDir, string inputDir)
+    /// <summary>
+    /// Generate Proton launch scripts: a .bat that runs dotnet exec inside Wine,
+    /// and a .sh wrapper for Steam launch options that substitutes the game exe
+    /// with the .bat in the Proton command.
+    /// </summary>
+    static void CreateProtonLaunchScripts(string gameDir, string gameName, string entryName, string dotnetDir)
+    {
+        var gameExe = FindGameExecutable(gameDir);
+        var gameExeName = gameExe != null ? Path.GetFileName(gameExe) : $"{gameName}.exe";
+
+        // Compute SDK path relative to game dir (for portability).
+        // Use Windows-style separators since this runs inside Wine.
+        var relativeSdk = Path.GetRelativePath(gameDir, dotnetDir).Replace('/', '\\');
+        var useRelative = !relativeSdk.StartsWith("..");
+        var sdkRef = useRelative ? $"%~dp0{relativeSdk}\\dotnet.exe" : $"{dotnetDir}\\dotnet.exe";
+
+        // .bat runs inside Wine/Proton using the Windows .NET runtime
+        var bat = Path.Combine(gameDir, "launch-modded.bat");
+        File.WriteAllText(bat, $"""
+            @echo off
+            cd /d "%~dp0"
+
+            set "DOTNET_EXE={sdkRef}"
+            if not exist "%DOTNET_EXE%" (
+                where dotnet >nul 2>&1 && set "DOTNET_EXE=dotnet"
+            )
+            if not exist "%DOTNET_EXE%" (
+                echo ERROR: Windows .NET 8 runtime not found.
+                echo Download from: https://dotnet.microsoft.com/download/dotnet/8.0
+                exit /b 1
+            )
+
+            set "DOTNET_STARTUP_HOOKS=%~dp0mods\loader\MurderModLoader.dll"
+            "%DOTNET_EXE%" exec --runtimeconfig ".modded\{entryName}.runtimeconfig.json" --depsfile ".modded\{entryName}.deps.json" --additionalProbingPath ".modded" ".modded\{entryName}.dll" %*
+            """);
+
+        // .sh wrapper for Steam launch options: ./launch-modded.sh %command%
+        // Replaces the game exe in the Proton command with our .bat file.
+        var sh = Path.Combine(gameDir, "launch-modded.sh");
+        // Build script content without C# string interpolation for bash syntax
+        var shContent = "#!/bin/bash\n"
+            + "SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
+            + "cd \"$SCRIPT_DIR\"\n"
+            + "\n"
+            + "# Replace game exe with launch-modded.bat in the Proton command.\n"
+            + $"# Steam's %command% expands to: /path/to/proton waitforexitandrun /path/to/{gameExeName}\n"
+            + "ARGS=()\n"
+            + "for arg in \"$@\"; do\n"
+            + "    case \"$arg\" in\n"
+            + $"        */{gameExeName}) ARGS+=(\"$SCRIPT_DIR/launch-modded.bat\") ;;\n"
+            + "        *) ARGS+=(\"$arg\") ;;\n"
+            + "    esac\n"
+            + "done\n"
+            + "\n"
+            + "exec \"${ARGS[@]}\"\n";
+        File.WriteAllText(sh, shContent);
+
+        Run("chmod", $"+x \"{sh}\"");
+    }
+
+    static void CreateLaunchScript(string gameDir, string gameName, string dotnetDir)
     {
         var relativeSdk = Path.GetRelativePath(gameDir, dotnetDir);
         var useRelative = !relativeSdk.StartsWith("..");
